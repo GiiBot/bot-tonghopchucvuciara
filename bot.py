@@ -146,12 +146,25 @@ class CrewPaginator(discord.ui.View):
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def crew_report(interaction: discord.Interaction):
+
+    # ⏳ Báo Discord: bot đang xử lý
+    await interaction.response.defer()
+
     pages = build_pages(interaction.guild)
+
+    if not pages:
+        await interaction.followup.send(
+            "❌ Không có dữ liệu crew"
+        )
+        return
+
     view = CrewPaginator(pages)
-    await interaction.response.send_message(
+
+    await interaction.followup.send(
         embed=pages[0],
         view=view
     )
+
 
 # ================= WEEKLY AUTO REPORT =================
 @tasks.loop(hours=24)
