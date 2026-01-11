@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 from datetime import datetime, timezone, timedelta
 
@@ -22,10 +23,27 @@ INACTIVE_DAYS = int(os.getenv("INACTIVE_DAYS", 7))
 PAGE_SIZE = 10
 VN_TZ = timezone(timedelta(hours=7))
 
+ACTIVITY_FILE = "activity.json"
+
 intents = discord.Intents.default()
 intents.members = True
 intents.presences = True
+intents.message_content = False  # KHÔNG cần đọc nội dung
 
+# ================= ACTIVITY STORAGE =================
+def load_activity():
+    if not os.path.exists(ACTIVITY_FILE):
+        return {}
+    with open(ACTIVITY_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_activity(data):
+    with open(ACTIVITY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+activity_data = load_activity()
+
+# ================= BOT =================
 class CrewBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
@@ -43,6 +61,18 @@ bot = CrewBot()
 async def on_ready():
     print(f"🤖 Logged in as {bot.user}", flush=True)
 
+# ================= TRACK ACTIVITY =================
+@bot.event
+async def on_message(message):
+    if message.author.bot or not message.guild:
+        return
+
+    uid = str(message.author.id)
+    activity_data[uid] = datetime.now(timezone.utc).isoformat()
+    save_activity(activity_data)
+
+    await bot.process_commands(message)
+
 # ================= COLLECT DATA (NO LAG) =================
 async def collect_rows(guild: discord.Guild):
     now = datetime.now(timezone.utc)
@@ -59,12 +89,18 @@ async def collect_rows(guild: discord.Guild):
         for member in role.members:
             counter += 1
             if counter % 25 == 0:
-                await asyncio.sleep(0)  # 🔥 NHẢ CPU → KHÔNG LAG
+                await asyncio.sleep(0)  # 🔥 NHẢ CPU
+
+            last = activity_data.get(str(member.id))
+            if last:
+                last_time = datetime.fromisoformat(last)
+                days = (now - last_time).days
+            else:
+                days = 999
 
             if member.status != discord.Status.offline:
                 status = "🟢 Online"
             else:
-                days = (now - member.last_message_at).days if member.last_message_at else 999
                 status = (
                     f"🔴 Inactive {days} ngày ⚠️"
                     if days >= INACTIVE_DAYS
@@ -142,7 +178,6 @@ class CrewPaginator(discord.ui.View):
 @app_commands.checks.has_permissions(administrator=True)
 async def crew_report(interaction: discord.Interaction):
 
-    # ⏳ giữ interaction sống
     await interaction.response.defer(thinking=True)
 
     rows = await collect_rows(interaction.guild)
