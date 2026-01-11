@@ -7,12 +7,10 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
 
+# ================= START LOG =================
 print("=== BOT STARTING ===", flush=True)
 
-
 # ================= CONFIG =================
-print("=== RUN BOT ===", flush=True)
-
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -20,7 +18,7 @@ GUILD_ID = int(os.getenv("GUILD_ID"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
 CREW_ROLE_IDS = [int(r) for r in os.getenv("CREW_ROLE_IDS").split(",")]
 
-INACTIVE_DAYS = 7
+INACTIVE_DAYS = int(os.getenv("INACTIVE_DAYS", 7))
 PAGE_SIZE = 10
 VN_TZ = timezone(timedelta(hours=7))
 
@@ -37,18 +35,19 @@ class CrewBot(commands.Bot):
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
         weekly_report.start()
-        print("✅ Bot ready & slash synced")
+        print("✅ Bot ready & slash synced", flush=True)
 
 bot = CrewBot()
 
 @bot.event
 async def on_ready():
-    print(f"🤖 Logged in as {bot.user}")
+    print(f"🤖 Logged in as {bot.user}", flush=True)
 
-# ================= CORE LOGIC =================
-def build_pages(guild: discord.Guild):
+# ================= COLLECT DATA (NO LAG) =================
+async def collect_rows(guild: discord.Guild):
     now = datetime.now(timezone.utc)
     rows = []
+    counter = 0
 
     roles = sorted(
         [guild.get_role(rid) for rid in CREW_ROLE_IDS if guild.get_role(rid)],
@@ -57,39 +56,47 @@ def build_pages(guild: discord.Guild):
     )
 
     for role in roles:
-        for m in role.members:
-            if m.status != discord.Status.offline:
+        for member in role.members:
+            counter += 1
+            if counter % 25 == 0:
+                await asyncio.sleep(0)  # 🔥 NHẢ CPU → KHÔNG LAG
+
+            if member.status != discord.Status.offline:
                 status = "🟢 Online"
             else:
-                if m.last_message_at:
-                    days = (now - m.last_message_at).days
-                    status = (
-                        f"🔴 Inactive {days} ngày ⚠️"
-                        if days >= INACTIVE_DAYS
-                        else f"🟡 Offline {days} ngày"
-                    )
-                else:
-                    status = "⚫ Chưa có hoạt động"
+                days = (now - member.last_message_at).days if member.last_message_at else 999
+                status = (
+                    f"🔴 Inactive {days} ngày ⚠️"
+                    if days >= INACTIVE_DAYS
+                    else f"🟡 Offline {days} ngày"
+                )
 
-            rows.append((role, m, status))
+            rows.append((role, member, status))
 
-    rows.sort(key=lambda x: x[0].position, reverse=True)
+    return rows
 
-    pages = []
-    total_pages = (len(rows) - 1) // PAGE_SIZE + 1
+# ================= PAGINATION (LAZY LOAD) =================
+class CrewPaginator(discord.ui.View):
+    def __init__(self, rows):
+        super().__init__(timeout=300)
+        self.rows = rows
+        self.page = 0
+        self.max_page = (len(rows) - 1) // PAGE_SIZE
 
-    for i in range(0, len(rows), PAGE_SIZE):
-        chunk = rows[i:i + PAGE_SIZE]
+    def build_page(self):
+        start = self.page * PAGE_SIZE
+        end = start + PAGE_SIZE
+        chunk = self.rows[start:end]
 
         embed = discord.Embed(
             title="📊 BÁO CÁO NHÂN SỰ CREW",
-            description=f"Trang {i//PAGE_SIZE + 1} / {total_pages}",
+            description=f"Trang {self.page + 1} / {self.max_page + 1}",
             color=0x5865F2
         )
 
         text = ""
         current_role = None
-        index = i + 1
+        index = start + 1
 
         for role, member, status in chunk:
             if role != current_role:
@@ -109,78 +116,69 @@ def build_pages(guild: discord.Guild):
             ),
             inline=False
         )
-
-        pages.append(embed)
-
-    return pages
-
-# ================= PAGINATION VIEW =================
-class CrewPaginator(discord.ui.View):
-    def __init__(self, pages):
-        super().__init__(timeout=300)
-        self.pages = pages
-        self.index = 0
-
-    async def update(self, interaction):
-        await interaction.response.edit_message(
-            embed=self.pages[self.index],
-            view=self
-        )
+        return embed
 
     @discord.ui.button(label="⬅️ Prev", style=discord.ButtonStyle.secondary)
     async def prev(self, interaction: discord.Interaction, _):
-        if self.index > 0:
-            self.index -= 1
-        await self.update(interaction)
+        self.page = max(0, self.page - 1)
+        await interaction.response.edit_message(
+            embed=self.build_page(),
+            view=self
+        )
 
     @discord.ui.button(label="➡️ Next", style=discord.ButtonStyle.primary)
     async def next(self, interaction: discord.Interaction, _):
-        if self.index < len(self.pages) - 1:
-            self.index += 1
-        await self.update(interaction)
+        self.page = min(self.max_page, self.page + 1)
+        await interaction.response.edit_message(
+            embed=self.build_page(),
+            view=self
+        )
 
 # ================= SLASH COMMAND =================
 @bot.tree.command(
     name="crew_report",
-    description="Báo cáo crew (phân trang, theo chức vụ)"
+    description="Báo cáo crew (tối ưu cho server đông)"
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def crew_report(interaction: discord.Interaction):
 
-    # ⏳ Báo Discord: bot đang xử lý
-    await interaction.response.defer()
+    # ⏳ giữ interaction sống
+    await interaction.response.defer(thinking=True)
 
-    pages = build_pages(interaction.guild)
+    rows = await collect_rows(interaction.guild)
 
-    if not pages:
-        await interaction.followup.send(
-            "❌ Không có dữ liệu crew"
-        )
+    if not rows:
+        await interaction.followup.send("❌ Không có dữ liệu crew")
         return
 
-    view = CrewPaginator(pages)
+    view = CrewPaginator(rows)
 
     await interaction.followup.send(
-        embed=pages[0],
+        embed=view.build_page(),
         view=view
     )
-
 
 # ================= WEEKLY AUTO REPORT =================
 @tasks.loop(hours=24)
 async def weekly_report():
     now = datetime.now(VN_TZ)
+    if now.weekday() != 6 or now.hour != 20:
+        return
 
-    # Chủ nhật 20:00
-    if now.weekday() == 6 and now.hour == 20:
-        guild = bot.get_guild(GUILD_ID)
-        channel = guild.get_channel(LOG_CHANNEL_ID)
+    guild = bot.get_guild(GUILD_ID)
+    channel = guild.get_channel(LOG_CHANNEL_ID)
 
-        pages = build_pages(guild)
-        await channel.send("📢 **BÁO CÁO NHÂN SỰ CREW HÀNG TUẦN**")
-        for embed in pages:
-            await channel.send(embed=embed)
-            await asyncio.sleep(1)
+    if not guild or not channel:
+        return
+
+    rows = await collect_rows(guild)
+
+    await channel.send("📢 **BÁO CÁO NHÂN SỰ CREW HÀNG TUẦN**")
+
+    for role, member, status in rows:
+        await channel.send(f"{member.display_name} | {role.name} | {status}")
+        await asyncio.sleep(0.3)
+
 # ================= RUN =================
 print("=== TRY LOGIN DISCORD ===", flush=True)
 
@@ -189,5 +187,3 @@ try:
 except Exception as e:
     print("❌ BOT CRASH:", e, flush=True)
     raise
-
-
