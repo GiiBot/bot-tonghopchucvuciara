@@ -34,8 +34,12 @@ intents.message_content = False  # KHÔNG cần đọc nội dung
 def load_activity():
     if not os.path.exists(ACTIVITY_FILE):
         return {}
-    with open(ACTIVITY_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(ACTIVITY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
+
 
 def save_activity(data):
     with open(ACTIVITY_FILE, "w", encoding="utf-8") as f:
@@ -175,7 +179,7 @@ class CrewPaginator(discord.ui.View):
     name="crew_report",
     description="Báo cáo crew (tối ưu cho server đông)"
 )
-@app_commands.checks.has_permissions(administrator=True)
+
 async def crew_report(interaction: discord.Interaction):
 
     await interaction.response.defer(thinking=True)
