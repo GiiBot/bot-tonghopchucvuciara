@@ -7,7 +7,12 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from dotenv import load_dotenv
 
+print("=== BOT STARTING ===", flush=True)
+
+
 # ================= CONFIG =================
+print("=== RUN BOT ===", flush=True)
+
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
