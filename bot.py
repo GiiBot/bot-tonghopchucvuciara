@@ -168,4 +168,13 @@ async def weekly_report():
         for embed in pages:
             await channel.send(embed=embed)
             await asyncio.sleep(1)
+# ================= RUN =================
+print("=== TRY LOGIN DISCORD ===", flush=True)
+
+try:
+    bot.run(TOKEN)
+except Exception as e:
+    print("❌ BOT CRASH:", e, flush=True)
+    raise
+
 
